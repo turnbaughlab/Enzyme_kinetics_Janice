@@ -1,0 +1,122 @@
+---
+title: "Microsome_GF_vs_SPF"
+author: "Janice Goh"
+date: "8/18/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+## Settings 
+
+```{r, results = "hide", message=FALSE, warning=FALSE}
+library(readxl)
+library(tidyverse)
+library(drc)
+setwd("/Users/jgoh/Box Sync/PK_microbiome_project/Analysis_wetlab/Microsomes/Microsome optimization/")
+```
+
+## load data 
+
+```{r, results = "hide"}
+substrate.conc <- c(10*2^-(0:6), 0) 
+data <- read_excel("20200819_SPF_vs_GF.xlsx", sheet = 2) %>% 
+          as.data.frame %>% 
+          dplyr::select(1:11, 14) %>%
+          mutate("substrate.conc" = rep(substrate.conc, 1)) 
+colnames(data) <- c("row", "GF_1", "GF_2", "GF_3", "GF_4", "SPF_1", "SPF_2", "SPF_3", "SPF_4", "Blank", "stdCurve", "Read", "substrate.conc")
+```
+
+
+## format and clean data 
+
+```{r}
+rownames(data) <- data$substrate.conc
+plot <- data %>% 
+          gather(colonization, intensity, GF_1:SPF_4) %>%
+          mutate(intensity = intensity - Blank) 
+     
+
+```
+
+## obtaining standard curve 
+
+```{r}
+std <- data %>%
+        dplyr::select(stdCurve)%>%
+        mutate(stdCurve = stdCurve - min(stdCurve), 
+               stdConc = rep(c(0.5*2^-(0:6),0)))
+
+## check curve linearity 
+ggplot(std, aes(x = stdConc, y = stdCurve))+
+  geom_smooth(method = "lm", se = F)+
+  geom_point()+
+  theme_classic()+
+  geom_text(label = paste0("Intercept = ", lm(stdCurve~stdConc, data = std)$coef[1], " ", 
+                           "Gradient = ", lm(stdCurve~stdConc, data = std)$coef[2]),
+            y = 1500, x = 0.5)
+
+```
+
+
+## use linear regression of standard curve to predict data 
+
+```{r}
+plot <- plot %>%
+          mutate(conc = 
+                   (intensity - lm(stdCurve~stdConc, data = std)$coef[1])/lm(stdCurve~stdConc, data = std)$coef[2]) %>%
+              separate(colonization, into = c("colonization", "Rep"), by = "_") %>%
+                  group_by(colonization, substrate.conc) %>%
+                  summarize(mean = mean(conc),
+                            sd = sd(conc),
+                            CV = sd(conc)/mean(conc))%>% 
+          filter(substrate.conc <5)
+
+```
+
+## Fit Michalelis Menten curve to data 
+
+```{r, results = "hide"}
+data.list <- split(as.data.frame(plot), plot$colonization)
+data.list <- lapply(names(data.list), function(x){
+                data.s <- data.list[[x]] %>% filter(substrate.conc <5)
+              	model.fit <- drm(mean ~ substrate.conc, data = data.s, fct = MM.2())
+            		curve.fit <- data.frame(S = seq(0, max(data.s$substrate.conc), length.out = 100))
+            		V <- predict(model.fit, newdata = curve.fit)
+            		curve.fit <- cbind(substrate.conc<-curve.fit, V)	
+            		curve.fit %>% mutate("colonization" = x,
+            		                     "Km" = as.numeric(model.fit$coefficients[2]),
+            		                     "Vmax" = as.numeric(model.fit$coefficients[1])) 
+            })
+data.list <- do.call(rbind, data.list)
+
+```
+
+## plotting with MM fit 
+
+```{r}
+ggplot(as.data.frame(plot) , aes(x = substrate.conc, y = mean, col = colonization))+
+  geom_point()+
+  geom_errorbar(aes(ymin= mean - sd, ymax= mean + sd),size=.5, width=.1)+
+  geom_line(data = data.list, aes(x = S, y = V, group = colonization, col = colonization))+
+  theme_classic()+
+  ylab("metabolite (uM)")+
+  xlab("substrate conc (uM)")
+
+
+```
+
+
+
+## Table of Km and Vmax values with increasing enzyme conc
+
+```{r}
+data.list %>% 
+  as.data.frame %>% 
+  dplyr::select(colonization, Km, Vmax) %>%
+  distinct()
+
+```
